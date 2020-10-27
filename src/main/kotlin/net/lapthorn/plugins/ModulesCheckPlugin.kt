@@ -21,7 +21,7 @@ class ModulesCheckPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         // Register a task
         project.tasks.register("modules-check") { task ->
-            // Recurse through all dependencies
+            // Recurse through all dependencies by default
             val recursive = project.properties["modules-check.recursive"]
                     ?.toString()?.toBoolean() ?: true
 
@@ -34,20 +34,24 @@ class ModulesCheckPlugin : Plugin<Project> {
                     ?.toString()
 
             task.doLast {
-                // Collection of projects (or just the one main project),
-                val projects = if (recursive) project.subprojects else setOf(project)
+                // Collection of projects to inspect (or just the one main project),
+                val projects = if (recursive) {
+                    // Subprojects AND parent
+                    project.subprojects.apply { add(project) }
+                } else {
+                    setOf(project)
+                }
 
-                val results = mutableSetOf<Result>()
+                val results = mutableListOf<Result>()
                 for (subproject in projects) {
                     val requestedConfiguration = subproject.configurations.find {
                         it.isCanBeResolved && it.name == cfgName
                     }
 
                     if (requestedConfiguration == null) {
-                        val cfgs = project.configurations
-                                .filter {
-                                    it.isCanBeResolved
-                                }.joinToString(prefix = "[", postfix = "]") { it.name }
+                        val cfgs = subproject.configurations
+                                .filter { it.isCanBeResolved }
+                                .joinToString(prefix = "[", postfix = "]") { it.name }
 
                         throw GradleException("Config $cfgName does not exist in $cfgs")
                     }
@@ -60,7 +64,8 @@ class ModulesCheckPlugin : Plugin<Project> {
         }
     }
 
-    private fun writeResults(outputFile: String?, results: MutableSet<Result>) {
+    private fun writeResults(outputFile: String?, results: List<Result>) {
+        // If no file, write csv to stdout
         val writer = if (outputFile == null) {
             BufferedWriter(OutputStreamWriter(System.out))
         } else {
@@ -77,6 +82,7 @@ class ModulesCheckPlugin : Plugin<Project> {
         writer.use {
             when (extension) {
                 "md" -> writeMarkdown(it, sortedResults)
+                "markdown" -> writeMarkdown(it, sortedResults)
                 else -> writeCsv(it, sortedResults)
             }
         }
@@ -84,21 +90,23 @@ class ModulesCheckPlugin : Plugin<Project> {
 
     private fun writeCsv(writer: BufferedWriter, results: List<Result>) {
         writer.write("jar,isMultiRelease,isOsgi,hasModuleInfo,AutomaticModuleName\n")
-        results.forEach { o ->
+        results.map { o ->
             val s = o.artifact.id.componentIdentifier.displayName
-            writer.write("$s,${o.isMultiReleaseJar},${o.isOSGi},${o.hasModuleInfo},${o.automaticModuleName}\n")
-        }
+            val jpms = o.hasModuleInfo || o.automaticModuleName.isNotBlank()
+            "$s,${o.isOSGi.yes()},${jpms.yes()},${o.isMultiReleaseJar.yes()},${o.hasModuleInfo.yes()},${o.automaticModuleName}\n"
+        }.sorted().toSet().forEach { writer.write(it) }
     }
 
-    fun Boolean.yes() : String = if (this) "YES" else ""
+    fun Boolean.yes(): String = if (this) "YES" else ""
 
     private fun writeMarkdown(writer: BufferedWriter, results: List<Result>) {
-        writer.write("jar|multi-release|OSGI|`module-info.class`|`Automatic-Module-Name`\n")
-        writer.write(":--|:-----------:|:--:|:-----------------:|:---------------------:\n")
-        results.forEach { o ->
+        writer.write("jar|OSGI|JPMS|multi-release|`module-info.class`|`Automatic-Module-Name`\n")
+        writer.write(":--|:--:|:--:|:-----------:|:-----------------:|:---------------------:\n")
+        results.map { o ->
             val s = o.artifact.id.componentIdentifier.displayName
-            writer.write("$s|${o.isMultiReleaseJar.yes()}|${o.isOSGi.yes()}|${o.hasModuleInfo.yes()}|${o.automaticModuleName}\n")
-        }
+            val jpms = o.hasModuleInfo || o.automaticModuleName.isNotBlank()
+            "$s|${o.isOSGi.yes()}|${jpms.yes()}|${o.isMultiReleaseJar.yes()}|${o.hasModuleInfo.yes()}|${o.automaticModuleName}\n"
+        }.sorted().toSet().forEach { writer.write(it) }
     }
 
     data class Result(val artifact: ResolvedArtifactResult,
@@ -111,31 +119,30 @@ class ModulesCheckPlugin : Plugin<Project> {
     private fun checkModules(artifacts: Set<ResolvedArtifactResult>): List<Result> {
         val jars = artifacts.filter { it.file.exists() && it.file.name.endsWith(".jar") }
 
-        val results = mutableListOf<Result>()
-        // now inspect each jar
-        for (jar in jars) {
-            val jarFile = JarFile(jar.file).let {
-                if (it.isMultiRelease) {
-                    JarFile(jar.file, false, ZipFile.OPEN_READ, Runtime.version())
-                } else {
-                    it
-                }
+        return jars.map { inspectJar(it) }
+    }
+
+    private fun inspectJar(jar: ResolvedArtifactResult): Result {
+        val jarFile = JarFile(jar.file).let {
+            if (it.isMultiRelease) {
+                JarFile(jar.file, false, ZipFile.OPEN_READ, Runtime.version())
+            } else {
+                it
             }
-
-            val automaticModuleName = jarFile.manifest.let {
-                it.mainAttributes.getValue("Automatic-Module-Name") ?: ""
-            }
-
-            val isOSGi = jarFile.manifest.mainAttributes
-                    .mapKeys { it.toString() }
-                    .filterKeys { it.contains("Bundle-") }
-                    .isNotEmpty()
-
-            val hasModuleInfo = jarFile.entries().toList()
-                    .any { !it.isDirectory && it.name.contains("module-info.class") }
-
-            results.add(Result(jar, isOSGi, automaticModuleName, hasModuleInfo, jarFile.isMultiRelease))
         }
-        return results
+
+        val automaticModuleName = jarFile.manifest.let {
+            it.mainAttributes.getValue("Automatic-Module-Name") ?: ""
+        }
+
+        val isOSGi = jarFile.manifest.mainAttributes
+                .mapKeys { it.toString() }
+                .filterKeys { it.contains("Bundle-") }
+                .isNotEmpty()
+
+        val hasModuleInfo = jarFile.entries().toList()
+                .any { !it.isDirectory && it.name.contains("module-info.class") }
+
+        return Result(jar, isOSGi, automaticModuleName, hasModuleInfo, jarFile.isMultiRelease)
     }
 }
