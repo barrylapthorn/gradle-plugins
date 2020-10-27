@@ -4,7 +4,8 @@ Checks for JPMS/Jigsaw support of all dependent `jars` and also if there is OSGi
 
 Writes out a file based on extension (`md`, or `csv`) if specified as a `gradle` property.
 
-Kotlin version of [this one](https://github.com/woggioni/my-gradle-plugins/blob/master/jpms-check)
+Kotlin version of [this plugin](https://github.com/woggioni/my-gradle-plugins/blob/master/jpms-check).
+Attribution [license](licenses/woggioni.md).
 
 ## Requirements
 
