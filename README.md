@@ -64,3 +64,15 @@ com.esotericsoftware:minlog:1.3.0|YES||||
 com.esotericsoftware:reflectasm:1.11.3|YES||||
 com.fasterxml:classmate:1.3.4|YES|YES|||com.fasterxml.classmate
 com.github.ben-manes.caffeine:caffeine:2.7.0|YES|YES|||com.github.benmanes.caffeine
+
+### Options
+
+* `modules-check.recursive=<true|false>`
+    * check and list all sub-project dependencies 
+* `modules-check.configurationName=<cfg>`
+    * Default value = `default`
+* `modules-check.outputFile=<path>`
+    * Output file.  Attempts to output by file suffix. Defaults to csv, null = stdout.
+* `modules-check.filter-osgi`
+    * Only list non-OSGi jars in the results
+    

@@ -33,6 +33,9 @@ class ModulesCheckPlugin : Plugin<Project> {
             val outputFile = project.properties["modules-check.outputFile"]
                     ?.toString()
 
+            val filterOsgi = project.properties["modules-check.filter-osgi"]
+                    ?.toString()?.toBoolean() ?: false
+
             task.doLast {
                 // Collection of projects to inspect (or just the one main project),
                 val projects = if (recursive) {
@@ -42,26 +45,32 @@ class ModulesCheckPlugin : Plugin<Project> {
                     setOf(project)
                 }
 
-                val results = mutableListOf<Result>()
-                for (subproject in projects) {
-                    val requestedConfiguration = subproject.configurations.find {
-                        it.isCanBeResolved && it.name == cfgName
-                    }
-
-                    if (requestedConfiguration == null) {
-                        val cfgs = subproject.configurations
-                                .filter { it.isCanBeResolved }
-                                .joinToString(prefix = "[", postfix = "]") { it.name }
-
-                        throw GradleException("Config $cfgName does not exist in $cfgs")
-                    }
-
-                    results.addAll(checkModules(requestedConfiguration.incoming.artifacts.artifacts))
-                }
+                val results = getResults(projects, cfgName, filterOsgi)
 
                 writeResults(outputFile, results)
             }
         }
+    }
+
+    private fun getResults(projects: Set<Project>, cfgName: String, filterOsgi: Boolean): List<Result> {
+        val results = mutableListOf<Result>()
+        for (subproject in projects) {
+            val requestedConfiguration = subproject.configurations.find {
+                it.isCanBeResolved && it.name == cfgName
+            }
+
+            if (requestedConfiguration == null) {
+                val cfgs = subproject.configurations
+                        .filter { it.isCanBeResolved }
+                        .joinToString(prefix = "[", postfix = "]") { it.name }
+
+                throw GradleException("Config $cfgName does not exist in $cfgs")
+            }
+
+            results.addAll(checkModules(requestedConfiguration.incoming.artifacts.artifacts))
+        }
+
+        return if (filterOsgi) results.filter { !it.isOSGi } else results
     }
 
     private fun writeResults(outputFile: String?, results: List<Result>) {
@@ -100,12 +109,12 @@ class ModulesCheckPlugin : Plugin<Project> {
     fun Boolean.yes(): String = if (this) "YES" else ""
 
     private fun writeMarkdown(writer: BufferedWriter, results: List<Result>) {
-        writer.write("jar|OSGI|JPMS|multi-release|`module-info.class`|`Automatic-Module-Name`\n")
-        writer.write(":--|:--:|:--:|:-----------:|:-----------------:|:---------------------:\n")
+        writer.write("jar|OSGI|JPMS|multi-release|`module-info.class`|`Automatic-Module-Name`|`Bundle-SymbolicName`\n")
+        writer.write(":--|:--:|:--:|:-----------:|:-----------------:|:---------------------:|:----:\n")
         results.map { o ->
             val s = o.artifact.id.componentIdentifier.displayName
             val jpms = o.hasModuleInfo || o.automaticModuleName.isNotBlank()
-            "$s|${o.isOSGi.yes()}|${jpms.yes()}|${o.isMultiReleaseJar.yes()}|${o.hasModuleInfo.yes()}|${o.automaticModuleName}\n"
+            "$s|${o.isOSGi.yes()}|${jpms.yes()}|${o.isMultiReleaseJar.yes()}|${o.hasModuleInfo.yes()}|${o.automaticModuleName}|${o.bundleSymbolicName}\n"
         }.sorted().toSet().forEach { writer.write(it) }
     }
 
@@ -113,7 +122,8 @@ class ModulesCheckPlugin : Plugin<Project> {
                       val isOSGi: Boolean,
                       val automaticModuleName: String,
                       val hasModuleInfo: Boolean,
-                      val isMultiReleaseJar: Boolean
+                      val isMultiReleaseJar: Boolean,
+                      val bundleSymbolicName: String
     )
 
     private fun checkModules(artifacts: Set<ResolvedArtifactResult>): List<Result> {
@@ -140,9 +150,14 @@ class ModulesCheckPlugin : Plugin<Project> {
                 .filterKeys { it.contains("Bundle-") }
                 .isNotEmpty()
 
+        val bundleSymbolicName = jarFile.manifest.mainAttributes
+                .mapKeys { it.toString() }
+                .getOrDefault("Bundle-SymbolicName", "")
+                .toString()
+
         val hasModuleInfo = jarFile.entries().toList()
                 .any { !it.isDirectory && it.name.contains("module-info.class") }
 
-        return Result(jar, isOSGi, automaticModuleName, hasModuleInfo, jarFile.isMultiRelease)
+        return Result(jar, isOSGi, automaticModuleName, hasModuleInfo, jarFile.isMultiRelease, bundleSymbolicName)
     }
 }
